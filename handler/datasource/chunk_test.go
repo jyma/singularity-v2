@@ -54,10 +54,12 @@ func TestChunk(t *testing.T) {
 		require.NoError(t, err)
 
 		// Chunk
-		chunk, err := client.Chunk(ctx, source.ID, datasource.ChunkRequest{ItemIDs: []uint64{itemA.ID, itemB.ID}})
+		chunk, err := client.ChunkItem(ctx, itemA.ID)
 		require.NoError(t, err)
 		fmt.Printf("%#v\n", chunk)
-
+		chunk, err = client.ChunkItem(ctx, itemB.ID)
+		require.NoError(t, err)
+		fmt.Printf("%#v\n", chunk)
 		// Check that chunk exists
 		chunks, err := client.GetSourceChunks(ctx, source.ID, inspect.GetSourceChunksRequest{})
 		require.NoError(t, err)

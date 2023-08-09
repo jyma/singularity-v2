@@ -21,5 +21,5 @@ type Client interface {
 	GetItem(ctx context.Context, id uint64) (*model.Item, error)
 	PushItem(ctx context.Context, sourceID uint32, itemInfo datasource.ItemInfo) (*model.Item, error)
 	GetSourceChunks(ctx context.Context, sourceID uint32, request inspect.GetSourceChunksRequest) ([]model.Chunk, error)
-	Chunk(ctx context.Context, sourceID uint32, request datasource.ChunkRequest) (*model.Chunk, error)
+	ChunkItem(ctx context.Context, itemID uint64) (int64, error)
 }

@@ -65,8 +65,8 @@ func (c *Client) PushItem(ctx context.Context, sourceID uint32, itemInfo dshandl
 	return dshandler.PushItemHandler(c.db.WithContext(ctx), ctx, c.datasourceHandlerResolver, sourceID, itemInfo)
 }
 
-func (c *Client) Chunk(ctx context.Context, sourceID uint32, request dshandler.ChunkRequest) (*model.Chunk, error) {
-	return dshandler.ChunkHandler(c.db.WithContext(ctx), strconv.FormatUint(uint64(sourceID), 10), request)
+func (c *Client) ChunkItem(ctx context.Context, itemID uint64) (int64, error) {
+	return dshandler.ChunkItemHandler(c.db.WithContext(ctx), itemID)
 }
 
 func (c *Client) Pack(ctx context.Context, chunkID uint64) ([]model.Car, error) {

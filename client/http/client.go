@@ -164,23 +164,27 @@ func (c *Client) GetSourceChunks(ctx context.Context, sourceID uint32, request i
 	return chunks, nil
 }
 
-func (c *Client) Chunk(ctx context.Context, sourceID uint32, request datasource.ChunkRequest) (*model.Chunk, error) {
-	response, err := c.jsonRequest(ctx, http.MethodPost, c.serverURL+"/api/source/"+strconv.FormatUint(uint64(sourceID), 10)+"/chunk", request)
+func (c *Client) ChunkItem(ctx context.Context, itemID uint64) (int64, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.serverURL+"/api/item/"+strconv.FormatUint(uint64(itemID), 10)+"/chunk", nil)
 	if err != nil {
-		return nil, err
+		return 0, err
+	}
+	response, err := c.client.Do(request)
+	if err != nil {
+		return 0, err
 	}
 	defer func() {
 		_ = response.Body.Close()
 	}()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, parseHTTPError(response)
+		return 0, parseHTTPError(response)
 	}
-	var chunk model.Chunk
-	err = json.NewDecoder(response.Body).Decode(&chunk)
+	var incomplete int64
+	err = json.NewDecoder(response.Body).Decode(&incomplete)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	return &chunk, nil
+	return incomplete, nil
 }
 
 func (c *Client) Pack(ctx context.Context, chunkID uint64) ([]model.Car, error) {
