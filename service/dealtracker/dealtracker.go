@@ -278,6 +278,11 @@ type UnknownDeal struct {
 	EndEpoch   int32
 }
 
+// runOnce executes the main logic of the DealTracker for a single iteration.
+//
+// The runOnce method tracks deals, updates their states in the database,
+// inserts new deals, and marks expired deals and deal proposals.
+// It returns an error if any step fails.
 func (d *DealTracker) runOnce(ctx context.Context) error {
 	var wallets []model.Wallet
 	err := d.db.WithContext(ctx).Find(&wallets).Error
