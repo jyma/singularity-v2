@@ -77,6 +77,25 @@ func (w DatasetWorker) Run(parent context.Context) error {
 	go healthcheck.StartHealthCheckCleanup(ctx, w.db)
 
 	var wg sync.WaitGroup
+	var scanWg sync.WaitGroup
+	for i := 0; i < w.config.Concurrency; i++ {
+		scanWg.Add(1)
+		id := uuid.New()
+		scanThread := DatasetWorkerThread{
+			id:                        id,
+			db:                        w.db.WithContext(ctx),
+			logger:                    logger.With("workerID", id.String()),
+			datasourceHandlerResolver: datasource.DefaultHandlerResolver{},
+			config:                    w.config,
+		}
+		w.threads[i] = scanThread
+		_, err := healthcheck.Register(ctx, w.db, scanThread.id, scanThread.getState, true)
+		if err != nil {
+			logger.Errorw("failed to register worker", "error", err)
+			continue
+		}
+		go scanThread.scanRun(ctx, errChan, &scanWg)
+	}
 	for i := 0; i < w.config.Concurrency; i++ {
 		wg.Add(1)
 		id := uuid.New()
@@ -99,6 +118,7 @@ func (w DatasetWorker) Run(parent context.Context) error {
 	done := make(chan struct{})
 
 	go func() {
+		scanWg.Wait()
 		wg.Wait()
 		done <- struct{}{}
 	}()
@@ -126,6 +146,88 @@ func (w *DatasetWorkerThread) getState() healthcheck.State {
 	return healthcheck.State{
 		WorkType:  w.workType,
 		WorkingOn: w.workingOn,
+	}
+}
+
+func (w *DatasetWorkerThread) scanRun(ctx context.Context, errChan chan<- error, wg *sync.WaitGroup) {
+	defer wg.Done()
+	defer func() {
+		if err := recover(); err != nil {
+			errChan <- errors.Errorf("panic: %v", err)
+		}
+	}()
+	go healthcheck.StartReportHealth(ctx, w.db, w.id, w.getState)
+	for {
+		w.directoryCache = map[string]uint64{}
+		// 1st, find scanning work
+		source, err := w.findScanWork()
+		if err != nil {
+			w.logger.Errorw("failed to scan", "error", err)
+			goto errorLoop
+		}
+		if source != nil {
+			err = w.scan(ctx, *source, source.Type != "manual")
+			if err != nil {
+				w.logger.Errorw("failed to scan", "error", err)
+				newState := model.Error
+				newErrorMessage := err.Error()
+				if errors.Is(err, context.Canceled) {
+					newState = model.Ready
+					newErrorMessage = ""
+					cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					//nolint:contextcheck
+					w.db = w.db.WithContext(cancelCtx)
+				}
+				err = database.DoRetry(func() error {
+					return w.db.Model(&model.Source{}).Where("id = ?", source.ID).Updates(
+						map[string]any{
+							"scanning_state":         newState,
+							"scanning_worker_id":     nil,
+							"error_message":          newErrorMessage,
+							"last_scanned_timestamp": time.Now().UTC().Unix(),
+						},
+					).Error
+				})
+				if err != nil {
+					w.logger.Errorw("failed to update source with error", "error", err)
+				}
+				goto errorLoop
+			}
+
+			w.logger.Debugw("saving scanning state to complete", "sourceID", source.ID)
+			err = database.DoRetry(func() error {
+				return w.db.Model(&model.Source{}).Where("id = ?", source.ID).Updates(
+					map[string]any{
+						"scanning_state":         model.Complete,
+						"scanning_worker_id":     nil,
+						"last_scanned_timestamp": time.Now().UTC().Unix(),
+						"last_scanned_path":      "",
+					},
+				).Error
+			})
+			if err != nil {
+				w.logger.Errorw("failed to update source to complete", "error", err)
+				goto errorLoop
+			}
+			continue
+		}
+
+		if w.config.ExitOnComplete {
+			w.logger.Debug("exiting on complete")
+			return
+		}
+	errorLoop:
+		if w.config.ExitOnError {
+			errChan <- err
+			return
+		}
+		w.logger.Debug("sleeping for a minute")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Minute):
+		}
 	}
 }
 
@@ -185,59 +287,6 @@ func (w *DatasetWorkerThread) run(ctx context.Context, errChan chan<- error, wg 
 			})
 			if err != nil {
 				w.logger.Errorw("failed to update source daggen to complete", "error", err)
-				goto errorLoop
-			}
-			continue
-		}
-		// 1st, find scanning work
-		source, err = w.findScanWork()
-		if err != nil {
-			w.logger.Errorw("failed to scan", "error", err)
-			goto errorLoop
-		}
-		if source != nil {
-			err = w.scan(ctx, *source, source.Type != "manual")
-			if err != nil {
-				w.logger.Errorw("failed to scan", "error", err)
-				newState := model.Error
-				newErrorMessage := err.Error()
-				if errors.Is(err, context.Canceled) {
-					newState = model.Ready
-					newErrorMessage = ""
-					cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					//nolint:contextcheck
-					w.db = w.db.WithContext(cancelCtx)
-				}
-				err = database.DoRetry(func() error {
-					return w.db.Model(&model.Source{}).Where("id = ?", source.ID).Updates(
-						map[string]any{
-							"scanning_state":         newState,
-							"scanning_worker_id":     nil,
-							"error_message":          newErrorMessage,
-							"last_scanned_timestamp": time.Now().UTC().Unix(),
-						},
-					).Error
-				})
-				if err != nil {
-					w.logger.Errorw("failed to update source with error", "error", err)
-				}
-				goto errorLoop
-			}
-
-			w.logger.Debugw("saving scanning state to complete", "sourceID", source.ID)
-			err = database.DoRetry(func() error {
-				return w.db.Model(&model.Source{}).Where("id = ?", source.ID).Updates(
-					map[string]any{
-						"scanning_state":         model.Complete,
-						"scanning_worker_id":     nil,
-						"last_scanned_timestamp": time.Now().UTC().Unix(),
-						"last_scanned_path":      "",
-					},
-				).Error
-			})
-			if err != nil {
-				w.logger.Errorw("failed to update source to complete", "error", err)
 				goto errorLoop
 			}
 			continue
